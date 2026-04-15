@@ -1,0 +1,347 @@
+---
+title: "MetroData"
+author: "Liz Conley"
+date: "2026-04-09"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(tidycensus)
+```
+
+#Step 1: Data Collection & Cleaning
+
+##Response Data
+This data comes from [WMATA's MetroRail Ridership Summary](https://www.wmata.com/initiatives/ridership-portal/Metrorail-Ridership-Summary.cfm).
+[This doccument](https://www.wmata.com/initiatives/ridership-portal/upload/RDP-Metadata.pdf) is helpful for understanding how the data comes from WMATA.
+
+---
+
+Elements used in following steps:
+```{r}
+# Fort Totten is in there twice, as B09 and B06
+# Gallery Pl-Chinatown is in there twice, as B01 and F01
+# L'Enfant Plaza is D03 & F03
+# Metro Center is on there twice as A01 and A10
+
+
+# The stations that are in there 2x are stations w/ multiple levels & connections to multiple lines
+
+
+StationList <- read_csv("wmata-rail-stations.csv", show_col_types = FALSE) %>% 
+  rename(Station = Name) %>%
+  arrange(Station) %>%
+  select(Station, Code)
+
+StationNames <- unique(StationList[[1]])
+#StationCodes <- StationList[[2]]
+
+rm(StationList)
+```
+
+
+---
+This dataset is good, but only has entrances, not exits. Also have to get a different .xlsx for each station.
+
+Source: [Daily Rail Entries over Time](https://www.wmata.com/initiatives/ridership-portal/Metrorail-Ridership-Summary.cfm)
+Year: 2023-2025
+Date: 1/1/2023 - 03/31/2026
+Month: all (Jan-Dec)
+Day of Week: all (Sun-Sat)
+Service Type: all (Saturday, Sunday, Weekday, July 4th Special, Sunday Reduced)
+Time Period: all (AM Peak - Late Night)
+Holiday: all (no & yes)
+```{r}
+#Daily Entries with Service _ StationName
+DEwS_AddisonRoad <- read_excel("Daily Rail Entries over Time/Addison Road-Seat Pleasant.xlsx") %>% 
+  pivot_longer(cols=!`Service Type`, names_to="Date", values_to="Ridership") %>%
+  na.omit() %>%
+  mutate(Station="Addison Road-Seat Pleasant") %>%
+  select(Ridership, Date, Station, `Service Type`) %>%
+  rename(Service = `Service Type`) %>%
+  mutate(Date = as.Date(mdy(Date)))
+
+rm(DEwS_AddisonRoad)
+```
+ridership: how many people entered the system
+station: the station they entered the system through
+date: the date at which they entered the system
+service: the service that was being offered at that date (system wide)
+
+Now as a function:
+```{r}
+read_DEwS <- function(StationName){
+  path <- str_c("Daily Rail Entries over Time/",StationName,".xlsx", sep="")
+  data <- read_excel(path) %>% 
+    pivot_longer(cols=!`Service Type`, names_to="Date", values_to="Ridership") %>%
+    na.omit() %>%
+    mutate(Station=StationName) %>%
+    select(Ridership, Date, Station, `Service Type`) %>%
+    rename(Service = `Service Type`) %>%
+    mutate(Date = as.Date(mdy(Date)))
+}
+
+read_all_DEwS <- function(StationNames){
+  DEwS <- read_DEwS(StationNames[1])
+  for(x in 2:98){
+    temp_DEwS <- read_DEwS(StationNames[x])
+    DEwS <- rbind(DEwS, temp_DEwS)
+  }
+  DEwS
+}
+
+DEwS <- read_all_DEwS(StationNames)
+```
+
+---
+
+This dataset is better, has entrances and exits. Still have to get a different .xlsx for each station.
+However, it doesn't record service type.
+
+Source: [Total Entries and Exits by Day](https://www.wmata.com/initiatives/ridership-portal/Metrorail-Ridership-Summary.cfm)
+Year: 2023-2025
+Date: 1/1/2023 - 03/31/2026
+Month: all (Jan-Dec)
+Day of Week: all (Sun-Sat)
+Service Type: all (Saturday, Sunday, Weekday, July 4th Special, Sunday Reduced)
+Time Period: all (AM Peak - Late Night)
+Holiday: all (no & yes)
+```{r}
+#Daily Entries and Exits _ StationName
+DEaX_AddisonRoad <- read_excel("Total Entries and Exits by Day/AddisonRoad.xlsx") %>%
+  mutate(Station="AddisonRoad") %>%
+  mutate(Code="G03") %>%
+  rename(Date = "...1") %>% mutate(Date = as.Date(mdy(Date))) %>%
+  select(Entries, Exits, Date, Station, Code)
+  
+```
+
+Now as a function:
+```{r}
+read_DEaX <- function(StationName){
+  path <- str_c("Total Entries and Exits by Day/",StationName,".xlsx", sep="")
+  data <- read_excel(path) %>% 
+  mutate(Station=StationName) %>%
+  rename(Date = "...1") %>% mutate(Date = as.Date(mdy(Date))) %>%
+  select(Entries, Exits, Date, Station)
+}
+
+read_all_DEaX <- function(StationNames){
+  DEaX <- read_DEaX(StationNames[1])
+  for(x in 2:98){
+    temp_DEaX <- read_DEaX(StationNames[x])
+    DEaX <- rbind(DEaX, temp_DEaX)
+  }
+  DEaX
+}
+
+DEaX <- read_all_DEaX(StationNames)
+```
+
+---
+
+Now I'm going to combine the 2 data sets:
+
+```{r}
+#Daily Entries and Exits with Service
+DEaXwS <- merge(DEaX, DEwS) %>% select(!Ridership)
+
+rm(DEaX, DEwS)
+```
+
+
+
+## Explanitory Data
+According to [these slides](https://ocw.mit.edu/courses/1-258j-public-transportation-systems-spring-2017/30236c5948850df0b1e4785cabb83b7f_MIT1_258JS17_lec08.pdf), some of the biggest factors affecting ridership are:
+
+1. Exogenous (uncontrollable)
+a. auto ownership/availability & operating costs
+b. fuel prices & availability
+c. demographics (age, gender, etc.) (age: young ppl don't have drivers licenses, old ppl struggle to drive. race: racial disparities track onto wealth disparities, track onto car ownership vs public transportation use.)
+d. activity system (population & employment distributions, etc.)
+
+2. Endogenous (controllable)
+a. fare
+b. headway (wait time)
+c. route structure (walk time; ride time)
+d. crowding*
+e. reliability*
+
+Some other predictive factors I could think of are:
+
+3. Other factors I thought of (mix of Exogenous and Endogenous)
+a. weather
+b. bus
+c. traffic
+d. bike/pedshed info
+e. time series data (holidays, schools in session or not, gov't shutdown)
+f. distance from center of network (metro center) (crow's miles, rail miles, stops, etc?)
+g. planned construction
+
+---
+
+1a.
+Data on auto ownership/availability & operating costs: (none acquired yet.) 
+Could use the US Census Beauro Vehicle Inventory and Use Survey (VIUS), but the Annual granularity is likely too broad.
+
+---
+
+1b.
+Data on fuel prices & availability: (none acquired yet.) 
+Source: US EIA (Energy Information Administration) [U.S. Regular Gasoline Prices*(dollars per gallon)](https://www.eia.gov/petroleum/gasdiesel/)
+
+```{r}
+GasPrices <- read_excel("ExplData/1b.xls", sheet=2, range="A3:C1863") %>%
+  mutate(Date = as.Date(ymd(Date))) %>%
+  filter(Date >= "2023-01-01") %>% filter(Date < "2026-03-31") %>%
+  rename(`East Coast Gas Price` = `Weekly East Coast Regular Conventional Retail Gasoline Prices  (Dollars per Gallon)`) %>%
+  select(Date, `East Coast Gas Price`) %>%
+  add_row(Date=as.Date("2023-01-01"), `East Coast Gas Price`=3.008, .before=1) %>%
+  add_row(Date=as.Date("2023-01-03"), `East Coast Gas Price`=3.172, .before=3) %>%
+  add_row(Date=as.Date("2023-01-04"), `East Coast Gas Price`=3.172, .before=4) %>%
+  add_row(Date=as.Date("2023-01-05"), `East Coast Gas Price`=3.172, .before=5) %>%
+  add_row(Date=as.Date("2023-01-06"), `East Coast Gas Price`=3.172, .before=6) %>%
+  add_row(Date=as.Date("2023-01-07"), `East Coast Gas Price`=3.172, .before=7) %>%
+  add_row(Date=as.Date("2023-01-08"), `East Coast Gas Price`=3.172, .before=8) %>%
+  complete(Date = full_seq(Date, 1))%>% 
+  fill(`East Coast Gas Price`) %>%
+  add_row(Date=as.Date("2026-03-31"), `East Coast Gas Price`=3.789)
+```
+
+---
+
+1c.
+Data on demographics: (can use tidycensus for demographic data on VA, DC & MD.)
+```{r}
+#acs <- get_acs(geography = "county", variables = )
+```
+
+---
+
+1d. activity system (population & employment distributions, etc.):
+part of this (population) falls under demographics.
+employment data could be gotten from ?
+
+Dates of gov't shutdown could be useful:
+```{r}
+temp_GovtShutdown1 <- GasPrices %>%
+  mutate(Shutdown = FALSE) %>%
+  select(Date, Shutdown)
+
+temp_GovtShutdown2 <- temp_GovtShutdown1 %>%
+  filter(between(Date, as.Date('2025-10-01'), as.Date('2025-11-12'))) %>%
+  mutate (Shutdown = TRUE)
+
+temp_GovtShutdown3 <- temp_GovtShutdown1 %>%
+  filter(between(Date, as.Date('2026-01-31'), as.Date('2026-02-03'))) %>%
+  mutate (Shutdown = TRUE)
+
+temp_GovtShutdown1 <- temp_GovtShutdown1 %>%
+  filter(!between(Date, as.Date('2025-10-01'), as.Date('2025-11-12'))) %>%
+  filter(!between(Date, as.Date('2026-01-31'), as.Date('2026-02-03')))
+
+GovtShutdown <- full_join(temp_GovtShutdown1, temp_GovtShutdown2) %>% full_join(temp_GovtShutdown3) %>% arrange(Date)
+
+rm(temp_GovtShutdown1, temp_GovtShutdown2, temp_GovtShutdown3)
+```
+
+Dates for cherry blossoms could also be useful, use the dates of the [National Cherry Blossom Festival](https://nationalcherryblossomfestival.org/).
+2023: 2023-03-20 to 2023-04-16
+2024: 2024-03-20 to 2024-04-14
+2025: 2025-03-20 to 2025-04-13
+2026: 2026-03-20 to 2026-04-12
+```{r}
+
+```
+
+Dates for caps games could also be useful, can be gotten from [HockeyReference](https://www.hockey-reference.com/teams/WSH/2024_games.html).
+```{r}
+hockey <- read_excel("CapsGames/Caps.xlsx")
+
+hockey$location <- replace_na(hockey$Location, "home")
+```
+
+
+Dates for capital pride could also be useful:
+
+Dates for planned construction could also be useful:
+
+
+---
+
+2a. fare:
+Metro fares are difficult to determine without knowing exact entrance and exit.
+The default flat fare price could be used?
+Service may encompass some of this, as fares vary with service.
+
+Use Service from DEaWxS.
+
+---
+
+2b. headway (wait time)
+Station and line specific.
+Might be able to get this data from google maps?
+
+See 2e. reliability*
+
+---
+
+2c. route structure (walk time; ride time)
+Also difficult to determine without knowing exact route.
+Could maybe factor station pedshed score into this?
+
+---
+
+2d. crowding*
+Station and line specific.
+Might be able to get this data from google maps?
+
+Best source is prolly the Service Excellence Report Data File from WMATA's [Public Records](https://www.wmata.com/about/records/public-records.cfm#performance),
+specifically the RCROW tab.
+
+---
+
+2e. reliability*
+Station and line specific.
+Might be able to get this data from google maps?
+Could get list of planned & unplanned station construction? And/or planned bus detour dates?
+
+Best source is prolly the Service Excellence Report Data File from WMATA's [Public Records](https://www.wmata.com/about/records/public-records.cfm#performance)
+specifically RAOTP (rail on time performance), RSDEL (percentage of planned services delivered), ELAVA (elevator availability) and ESAVA (escelator availability).
+Also look at REILA (fleet reliability)
+
+---
+
+3a. weather
+
+---
+
+3b. bus
+
+---
+
+3c. traffic
+
+---
+
+3d. bike/pedshed info
+
+---
+
+3e. time series data (holidays, schools in session or not, gov't shutdown)
+
+---
+
+3f. distance from center of network (metro center) (crow's miles, rail miles, stops, etc?)
+
+---
+
+3g. planned construction
+See WMATA Initiaves -> [Planned Construction](https://www.wmata.com/initiatives/plans/)
+
+---
