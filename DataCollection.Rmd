@@ -1,0 +1,261 @@
+---
+title: "DataCollection"
+author: "Liz Conley"
+date: "2026-04-15"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(tidycensus)
+library(sf)
+library(dplyr)
+```
+
+#Shapefiles for metro stations & lines from from [ArcGIS Hub](https://hub.arcgis.com/maps/mwcog::metro-lines-and-stations-1/about?path=):
+Code block hidden since I've cached this all to a csv.
+//```{r}
+stations <- st_read("RawData/MetroShapefiles/stations/Metro_Rail_Stations.shp") #station names cleaned below
+lines <- st_read("RawData/MetroShapefiles/lines/Metro_Rail_Lines.shp") #station names not cleaned
+///```
+
+List of cleaned station names:
+Code block hidden since I've cached this all to a csv.
+//```{r}
+stations[96,3] <- "College Park-U of Md"
+stations[96,4] <- "College Park-U of Md"
+
+stations[66,3] <- "U StreetAfrican-Amer Civil War MemorialCardozo"
+stations[66,4] <- "U StreetAfrican-Amer Civil War MemorialCardozo"
+
+stations[50,3] <- "Woodley Park-ZooAdams Morgan"
+stations[50,4] <- "Woodley Park-ZooAdams Morgan"
+
+stations[33,3] <- "ViennaFairfax-GMU"
+stations[33,4] <- "ViennaFairfax-GMU"
+
+
+StationNames <- stations %>% select(NAME) %>% arrange(NAME)
+
+//```
+
+#Adjacency Matrix for Stations
+```{r}
+#adj <- as.matrix(read_csv("RawData/railme/adj.csv", col_names=FALSE)) #adjacency matrix for stations
+#matrix number not the same as station number from shapefile, correct mapping is in nodes.
+
+#nodes <- read_csv("RawData/railme/nodes.csv", col_names=FALSE) %>% arrange(X2) %>% rename(MatrixNumber = X1) %>% rename(NAME = X2)
+#contains matrix number mappings for the stations.
+
+#stations2 <- stations %>% arrange(NAME)
+#stations3 <- full_join(nodes, stations2) %>% arrange(MatrixNumber)
+#stations3 <- st_as_sf(stations3, coords=c("XCoord", "YCoord"))
+#Shapefile with correct matrix numbers.
+
+#stations3 <- stations3 %>% rename("Station" = "NAME")
+
+#st_write(stations3, "CleanData/StationsShapefile.shp", append=FALSE)
+
+StationsAdjacencyMatrix <- as.matrix(read_csv("CleanData/StationsAdjacencyMatrix.csv", col_names=FALSE))
+
+CleanedStations <- st_read("CleanData/StationsShapefile.shp")
+```
+
+
+#Population Data
+```{r}
+
+```
+
+
+#[Daily Rail Entries over Time](https://www.wmata.com/initiatives/ridership-portal/Metrorail-Ridership-Summary.cfm):
+Year: 2023-2025
+Date: 1/1/2023 - 03/31/2026
+Month: all (Jan-Dec)
+Day of Week: all (Sun-Sat)
+Service Type: all (Saturday, Sunday, Weekday, July 4th Special, Sunday Reduced)
+Time Period: all (AM Peak - Late Night)
+Holiday: all (no & yes)
+Code block hidden since I've cached this all to a csv.
+//r}
+read_DEwS <- function(StationName){
+  path <- str_c("RawData/Daily Rail Entries over Time/",StationName,".xlsx", sep="")
+  data <- read_excel(path) %>% 
+    pivot_longer(cols=!`Service Type`, names_to="Date", values_to="Ridership") %>%
+    na.omit() %>%
+    mutate(Station=StationName) %>%
+    select(Ridership, Date, Station, `Service Type`) %>%
+    rename(Service = `Service Type`) %>%
+    mutate(Date = as.Date(mdy(Date)))
+}
+
+read_all_DEwS <- function(StationNames){
+  DEwS <- read_DEwS(StationNames[1])
+  for(x in 2:98){
+    temp_DEwS <- read_DEwS(StationNames[x])
+    DEwS <- rbind(DEwS, temp_DEwS)
+  }
+  DEwS
+}
+
+DEwS <- read_all_DEwS(StationNames$NAME)
+//```
+
+#[Total Entries and Exits by Day](https://www.wmata.com/initiatives/ridership-portal/Metrorail-Ridership-Summary.cfm):
+Year: 2023-2025
+Date: 1/1/2023 - 03/31/2026
+Month: all (Jan-Dec)
+Day of Week: all (Sun-Sat)
+Service Type: all (Saturday, Sunday, Weekday, July 4th Special, Sunday Reduced)
+Time Period: all (AM Peak - Late Night)
+Holiday: all (no & yes)
+Code block hidden since I've cached this all to a csv.
+//```{r}
+read_DEaX <- function(StationName){
+  path <- str_c("RawData/Total Entries and Exits by Day/",StationName,".xlsx", sep="")
+  data <- read_excel(path) %>% 
+  mutate(Station=StationName) %>%
+  rename(Date = "...1") %>% mutate(Date = as.Date(mdy(Date))) %>%
+  select(Entries, Exits, Date, Station)
+}
+
+read_all_DEaX <- function(StationNames){
+  DEaX <- read_DEaX(StationNames[1])
+  for(x in 2:98){
+    temp_DEaX <- read_DEaX(StationNames[x])
+    DEaX <- rbind(DEaX, temp_DEaX)
+  }
+  DEaX
+}
+
+DEaX <- read_all_DEaX(StationNames$NAME)
+//```
+
+Daily Entries and Exits with Service:
+Code block hidden since I've cached this all to a csv.
+//```{r}
+DEaXwS <- merge(DEaX, DEwS) %>% select(!Ridership)
+
+write.csv(DEaXwS, "RawData/DEaXwS.csv")
+
+rm(DEaX, DEwS)
+//```
+```{r}
+DEaXwS <- read_csv("RawData/DEaXwS.csv") %>% select(c(Date, Station, Entries, Exits, Service))
+```
+
+#East Coast gas prices (weekly):
+```{r}
+GasPrices <- read_excel("RawData/GasPrices/1b.xls", sheet=2, range="A3:C1863") %>%
+  mutate(Date = as.Date(ymd(Date))) %>%
+  filter(Date >= "2023-01-01") %>% filter(Date < "2026-03-31") %>%
+  rename(`East Coast Gas Price` = `Weekly East Coast Regular Conventional Retail Gasoline Prices  (Dollars per Gallon)`) %>%
+  select(Date, `East Coast Gas Price`) %>%
+  add_row(Date=as.Date("2023-01-01"), `East Coast Gas Price`=3.008, .before=1) %>%
+  add_row(Date=as.Date("2023-01-03"), `East Coast Gas Price`=3.172, .before=3) %>%
+  add_row(Date=as.Date("2023-01-04"), `East Coast Gas Price`=3.172, .before=4) %>%
+  add_row(Date=as.Date("2023-01-05"), `East Coast Gas Price`=3.172, .before=5) %>%
+  add_row(Date=as.Date("2023-01-06"), `East Coast Gas Price`=3.172, .before=6) %>%
+  add_row(Date=as.Date("2023-01-07"), `East Coast Gas Price`=3.172, .before=7) %>%
+  add_row(Date=as.Date("2023-01-08"), `East Coast Gas Price`=3.172, .before=8) %>%
+  complete(Date = full_seq(Date, 1))%>% 
+  fill(`East Coast Gas Price`) %>%
+  add_row(Date=as.Date("2026-03-31"), `East Coast Gas Price`=3.789)
+```
+
+#Dates of gov't shutdown:
+```{r}
+GovtShutdown <- read_csv("RawData/CityEvents/GovtShutdown.csv")
+```
+
+#Dates for cherry blossoms festival, from [National Cherry Blossom Festival](https://nationalcherryblossomfestival.org/):
+```{r}
+CherryBlossomsFestival <- read_csv("RawData/CityEvents/CherryBlossomsFestival.csv") %>%
+  mutate(Date = mdy(Date))
+
+```
+
+#Dates for caps games, from [HockeyReference](https://www.hockey-reference.com/teams/WSH/2024_games.html):
+```{r}
+hockey <- read_excel("RawData/CityEvents/CapsGames/Caps.xlsx")
+hockey$Location <- replace_na(hockey$Location, "home")
+hockey <- hockey %>% filter(Location=="home") %>% select(-GP)
+```
+
+#All time series data combined into 1 data set
+```{r}
+TimeSeries <- merge(GasPrices, GovtShutdown)
+TimeSeries <- merge(TimeSeries, CherryBlossomsFestival)
+TimeSeries2 <- full_join(TimeSeries, hockey, by="Date") %>% filter(Date<=as.Date("2026-03-31"))
+TimeSeries2$Location <- replace_na(TimeSeries2$Location, "none")
+TimeSeries2$Season <- replace_na(TimeSeries2$Season, "none")
+TimeSeries2 <- TimeSeries2 %>% rename("HockeyLocation" = "Location")
+TimeSeries2 <- TimeSeries2 %>% rename("HockeySeason" = "Season")
+```
+
+#All combined into 1 data set
+```{r}
+DataSet <- full_join(DEaXwS, TimeSeries2, by="Date")
+write_csv(DataSet, file="CleanData/DataSet.csv", append=FALSE, col_names=TRUE)
+
+DataSet <- read_csv("CleanData/DataSet.csv")
+
+#may want to morph data from daily to average weekly, flatten out noise & also reduce computational load?
+#https://www.statology.org/aggregate-daily-data-in-r/
+library(data.table)
+DataSet_WeeklyAvg <- DataSet
+
+#Encode special events as numeric, for a weekly score out of 7 for how many days of the week the event was happening
+DataSet_WeeklyAvg$Shutdown <- as.numeric(DataSet_WeeklyAvg$Shutdown)
+DataSet_WeeklyAvg$CherryBlossoms <- as.numeric(DataSet_WeeklyAvg$CherryBlossoms)
+
+#Drop hockey season, games are already rare enough that I don't think the season will have a strong effect
+
+library(dplyr)
+DataSet_WeeklyAvg$HockeyLocation <- DataSet_WeeklyAvg$HockeyLocation %>% 
+  mutate_if(is.character, as.factor)
+
+
+dt <- as.data.table(DataSet_WeeklyAvg)
+Entries_WeeklyAvg <- dt[, .(weekly_mean = mean(Entries)), 
+                 by = .(week = floor_date(Date, "week"))]
+Exits_WeeklyAvg <- dt[, .(weekly_mean = mean(Entries)), 
+                 by = .(week = floor_date(Date, "week"))]
+GasPrice_WeeklyAvg <- dt[, .(weekly_mean = mean(`East Coast Gas Price`)), 
+                 by = .(week = floor_date(Date, "week"))]
+```
+
+
+#NEED TO ENTER DATES
+Dates for capital pride, from []():
+```{r}
+CapitalPride <- read_csv("RawData/CityEvents/CapitalPride.csv")
+```
+
+#NEED TO ENTER DATES
+Metro planned construction, from [WMATA](https://www.wmata.com/initiatives/plans/):
+```{r}
+
+```
+
+#NEED TO EXTRACT DATA
+Service Excellence Report Data File from WMATA's [Public Records](https://www.wmata.com/about/records/public-records.cfm#performance):
+```{r}
+
+```
+
+#NEED TO COLLECT/EXTRACT DATA
+WMATA Pedshed & Bikeshed Atlas Scores from [Pedshed & Bikeshed Atlas](https://www.wmata.com/initiatives/pedshed-and-bikeshed-atlas/):
+```{r}
+
+```
+
+#NEED TO COLLECT DATA
+Weather from []():
+```{r}
+
+```
